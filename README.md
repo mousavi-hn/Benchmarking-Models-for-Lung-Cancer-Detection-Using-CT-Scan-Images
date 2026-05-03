@@ -183,10 +183,10 @@ It is **not a medical diagnostic tool**.
 
 ## 📬 Contact
 
-Hossein Mousavi,
+* Hossein Mousavi,
 BSc Computer Science Engineering — BME
-Email: mousavi.hn@gmail.com
-GitHub: https://github.com/mousavi-hn
+* Email: mousavi.hn@gmail.com
+* GitHub: https://github.com/mousavi-hn
 
 ---
 
