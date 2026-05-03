@@ -1,4 +1,17 @@
 import tensorflow as tf
+from pathlib import Path
+
+DATASET_DIR = Path("processed_lidc_2d")
+
+# CT window for lung tissue
+HU_MIN = -1000
+HU_MAX = 400
+
+# Ignore uncertain malignancy if later needed
+USE_MALIGNANCY_LABELS = False
+
+# Minimum number of positive slices required to keep a scan
+MIN_POSITIVE_SLICES_PER_SCAN = 1
 
 SEED = 42
 

@@ -1,67 +1,95 @@
-import os
-
+import shutil
 import pandas as pd
-
+from pathlib import Path
 from sklearn.model_selection import train_test_split
+from dataset import generate_metadata
 
-from dataset import collect_image_paths, DATASET_DIR, SPLIT_DIR
-from src.configs import SEED
+from src.configs import DATASET_DIR
+
+
+RANDOM_STATE = 42
+
+TRAIN_RATIO = 0.70
+VAL_RATIO = 0.15
+TEST_RATIO = 0.15
+
+
+def copy_images(df, split_name):
+    for _, row in df.iterrows():
+        src = Path(row["file_path"])
+        label = row["label"]
+
+        dst_dir = OUTPUT_DIR / "dataset" / split_name / label
+        dst_dir.mkdir(parents=True, exist_ok=True)
+
+        dst = dst_dir / src.name
+        shutil.copy2(src, dst)
+
+
+def balance_negatives(df):
+    yes_df = df[df["label"] == "yes"]
+    no_df = df[df["label"] == "no"]
+
+    n_yes = len(yes_df)
+
+    if len(no_df) > n_yes:
+        no_df = no_df.sample(n=n_yes, random_state=RANDOM_STATE)
+
+    return pd.concat([yes_df, no_df]).sample(frac=1, random_state=RANDOM_STATE)
+
 
 def make_splits():
-    full_df = collect_image_paths(DATASET_DIR)
-    print("Total images:", len(full_df))
-    print(full_df["class_name"].value_counts())
+    generate_metadata()
+    metadata_path = DATASET_DIR / "metadata_all_slices.csv"
+    df = pd.read_csv(metadata_path)
 
-    ixi_df = full_df[full_df["source"] == "IXI"].copy()
-    other_df = full_df[full_df["source"] != "IXI"].copy()
-
-    # Split non-IXI normally by label ( labels are no and yes, no says there is no cancer and yes the opposite )
-    other_train, other_temp = train_test_split(
-        other_df,
-        test_size=0.30,
-        stratify=other_df["label"],
-        random_state=SEED
+    scan_labels = (
+        df.groupby("scan_id")["label"]
+        .apply(lambda x: "yes" if "yes" in set(x) else "no")
+        .reset_index()
     )
 
-    other_val, other_test = train_test_split(
-        other_temp,
-        test_size=0.50,
-        stratify=other_temp["label"],
-        random_state=SEED
+    train_scans, temp_scans = train_test_split(
+        scan_labels["scan_id"],
+        train_size=TRAIN_RATIO,
+        random_state=RANDOM_STATE,
+        shuffle=True,
+        stratify=scan_labels["label"]
     )
 
-    # Split IXI by subject_id
-    ixi_subjects = ixi_df[["subject_id"]].drop_duplicates()
+    temp_df = scan_labels[scan_labels["scan_id"].isin(temp_scans)]
 
-    ixi_train_subjects, ixi_temp_subjects = train_test_split(
-        ixi_subjects,
-        test_size=0.30,
-        random_state=SEED
+    val_scans, test_scans = train_test_split(
+        temp_df["scan_id"],
+        test_size=TEST_RATIO / (VAL_RATIO + TEST_RATIO),
+        random_state=RANDOM_STATE,
+        shuffle=True,
+        stratify=temp_df["label"]
     )
 
-    ixi_val_subjects, ixi_test_subjects = train_test_split(
-        ixi_temp_subjects,
-        test_size=0.50,
-        random_state=SEED
-    )
+    train_df = df[df["scan_id"].isin(train_scans)]
+    val_df = df[df["scan_id"].isin(val_scans)]
+    test_df = df[df["scan_id"].isin(test_scans)]
 
-    ixi_train = ixi_df[ixi_df["subject_id"].isin(ixi_train_subjects["subject_id"])]
-    ixi_val = ixi_df[ixi_df["subject_id"].isin(ixi_val_subjects["subject_id"])]
-    ixi_test = ixi_df[ixi_df["subject_id"].isin(ixi_test_subjects["subject_id"])]
+    train_df = balance_negatives(train_df)
+    val_df = balance_negatives(val_df)
+    test_df = balance_negatives(test_df)
 
-    # Merge splits
-    train_df = pd.concat([other_train, ixi_train], ignore_index=True)
-    val_df = pd.concat([other_val, ixi_val], ignore_index=True)
-    test_df = pd.concat([other_test, ixi_test], ignore_index=True)
+    copy_images(train_df, "train")
+    copy_images(val_df, "val")
+    copy_images(test_df, "test")
 
-    # saving CSVs
-    train_df.to_csv(os.path.join(SPLIT_DIR, "train_split.csv"), index=False)
-    val_df.to_csv(os.path.join(SPLIT_DIR, "val_split.csv"), index=False)
-    test_df.to_csv(os.path.join(SPLIT_DIR, "test_split.csv"), index=False)
+    train_df.to_csv(OUTPUT_DIR / "metadata_train.csv", index=False)
+    val_df.to_csv(OUTPUT_DIR / "metadata_val.csv", index=False)
+    test_df.to_csv(OUTPUT_DIR / "metadata_test.csv", index=False)
 
-    # shuffle rows
-    train_df = train_df.sample(frac=1, random_state=SEED).reset_index(drop=True)
-    val_df = val_df.sample(frac=1, random_state=SEED).reset_index(drop=True)
-    test_df = test_df.sample(frac=1, random_state=SEED).reset_index(drop=True)
+    print("Train:")
+    print(train_df["label"].value_counts())
+
+    print("\nVal:")
+    print(val_df["label"].value_counts())
+
+    print("\nTest:")
+    print(test_df["label"].value_counts())
 
     return train_df, val_df, test_df

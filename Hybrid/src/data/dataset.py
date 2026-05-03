@@ -1,56 +1,102 @@
-import keras
+import cv2
 import numpy as np
+import pandas as pd
+from tqdm import tqdm
+import pylidc as pl
 
-from loader import read_image
-import src.configs as cfg
+from src.configs import DATASET_DIR, IMG_SIZE, HU_MIN, HU_MAX
 
-class MRISequence(keras.utils.Sequence):
-    def __init__(self, df, preprocess_func, batch_size=8, target_size=(224, 224), shuffle=False):
-        super().__init__()
-        self.df = df.reset_index(drop=True).copy()
-        self.preprocess_func = preprocess_func
-        self.batch_size = batch_size
-        self.target_size = target_size
-        self.shuffle = shuffle
-        self.indices = np.arange(len(self.df))
-        self.on_epoch_end()
+# PATHS AND SETTINGS
+OUTPUT_DIR = "../results/CT_cnn_benchmark_results"
+SPLIT_DIR = os.path.join(OUTPUT_DIR, "splits")
+MODEL_DIR = os.path.join(OUTPUT_DIR, "saved_models")
+PLOT_DIR = os.path.join(OUTPUT_DIR, "plots")
 
-    def __len__(self):
-        return int(np.ceil(len(self.df) / self.batch_size))
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(SPLIT_DIR, exist_ok=True)
+os.makedirs(MODEL_DIR, exist_ok=True)
+os.makedirs(PLOT_DIR, exist_ok=True)
 
-    def __getitem__(self, idx):
-        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
-        batch_df = self.df.iloc[batch_indices]
 
-        images = []
-        labels = []
+def normalize_hu(slice_img):
+    slice_img = np.clip(slice_img, HU_MIN, HU_MAX)
+    slice_img = (slice_img - HU_MIN) / (HU_MAX - HU_MIN)
+    slice_img = (slice_img * 255).astype(np.uint8)
+    return slice_img
 
-        for _, row in batch_df.iterrows():
-            img = read_image(row["filepath"], self.target_size)
-            img = self.preprocess_func(img)
-            images.append(img)
-            labels.append(float(row["label"]))
 
-        x = np.asarray(images, dtype=np.float32)
-        y = np.asarray(labels, dtype=np.float32).reshape(-1, 1)
-        return x, y
+def resize_img(img):
+    return cv2.resize(img, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_AREA)
 
-    def on_epoch_end(self):
-        if self.shuffle:
-            rng = np.random.default_rng(cfg.SEED)
-            rng.shuffle(self.indices)
 
-def make_generators(preprocess_func, train_df, val_df, test_df):
-    train_seq = MRISequence(
-        train_df, preprocess_func, batch_size=cfg.BATCH_SIZE,
-        target_size=cfg.IMG_SIZE, shuffle=True
-    )
-    val_seq = MRISequence(
-        val_df, preprocess_func, batch_size=cfg.BATCH_SIZE,
-        target_size=cfg.IMG_SIZE, shuffle=False
-    )
-    test_seq = MRISequence(
-        test_df, preprocess_func, batch_size=cfg.BATCH_SIZE,
-        target_size=cfg.IMG_SIZE, shuffle=False
-    )
-    return train_seq, val_seq, test_seq
+def get_positive_slice_indices(scan):
+    positive_slices = set()
+    nodules = scan.cluster_annotations()
+
+    for nodule in nodules:
+        for ann in nodule:
+            bbox = ann.bbox()
+
+            z_slice = bbox[2]
+            z_min = z_slice.start
+            z_max = z_slice.stop
+
+            for z in range(z_min, z_max):
+                positive_slices.add(z)
+
+    return positive_slices
+
+
+def export_scan(scan, metadata_rows):
+    volume = scan.to_volume()  # shape: H, W, Z
+    positive_slices = get_positive_slice_indices(scan)
+
+    patient_id = scan.patient_id
+    scan_id = scan.id
+
+    for z in range(volume.shape[2]):
+        label = "yes" if z in positive_slices else "no"
+
+        img = volume[:, :, z]
+        img = normalize_hu(img)
+        img = resize_img(img)
+
+        out_dir = OUTPUT_DIR / "all_images" / label
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"{patient_id}_scan{scan_id}_slice{z:04d}.png"
+        out_path = out_dir / filename
+
+        cv2.imwrite(str(out_path), img)
+
+        metadata_rows.append({
+            "patient_id": patient_id,
+            "scan_id": scan_id,
+            "slice_index": z,
+            "label": label,
+            "file_path": str(out_path)
+        })
+
+
+def generate_metadata():
+    if Path(DATASET_DIR / "metadata_all_slices.csv").exists():
+        return
+
+    DATASET_DIR.mkdir(parents=True, exist_ok=True)
+
+    scans = pl.query(pl.Scan).all()
+    metadata_rows = []
+
+    print(f"Found {len(scans)} scans.")
+
+    for scan in tqdm(scans, desc="Exporting scans"):
+        try:
+            export_scan(scan, metadata_rows)
+        except Exception as e:
+            print(f"Failed scan {scan.id}, patient {scan.patient_id}: {e}")
+
+    df = pd.DataFrame(metadata_rows)
+    df.to_csv(DATASET_DIR / "metadata_all_slices.csv", index=False)
+
+    print("Done.")
+    print(df["label"].value_counts())

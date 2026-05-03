@@ -1,73 +1,45 @@
-import os
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
-from pathlib import Path
-import pandas as pd
-from PIL import Image
-import numpy as np
+from src.configs import SEED
 
-import src.configs as cfg
+def make_generators(preprocess_func, train_df, val_df, test_df, target_size=(224, 224), batch_size=32):
 
-DATASET_DIR = "../data/MRI_Images"          # yes / no / IXI_no
-CLASSICAL_MODEL_DIR = "../results/MRI_cnn_benchmark_results/saved_models"
-OUTPUT_DIR = "../results/MRI_hybrid_benchmark_results"
-SPLIT_DIR = os.path.join(OUTPUT_DIR, "splits")
-MODEL_DIR = os.path.join(OUTPUT_DIR, "saved_models")
-PLOT_DIR = os.path.join(OUTPUT_DIR, "plots")
-REPORT_DIR = os.path.join(OUTPUT_DIR, "reports")
+    datagen = ImageDataGenerator(
+        preprocessing_function=preprocess_func
+    )
 
-for folder in [OUTPUT_DIR, SPLIT_DIR, MODEL_DIR, PLOT_DIR, REPORT_DIR]:
-    os.makedirs(folder, exist_ok=True)
+    train_gen = datagen.flow_from_dataframe(
+        dataframe=train_df,
+        x_col="file_path",
+        y_col="label",
+        target_size=target_size,
+        color_mode="rgb",
+        class_mode="binary",
+        batch_size=batch_size,
+        shuffle=True,
+        seed=SEED
+    )
 
-def collect_image_paths(dataset_dir):
-    records = []
+    val_gen = datagen.flow_from_dataframe(
+        dataframe=val_df,
+        x_col="file_path",
+        y_col="label",
+        target_size=target_size,
+        color_mode="rgb",
+        class_mode="binary",
+        batch_size=batch_size,
+        shuffle=False
+    )
 
-    class_map = {
-        "no": 0,
-        "yes": 1,
-    }
+    test_gen = datagen.flow_from_dataframe(
+        dataframe=test_df,
+        x_col="file_path",
+        y_col="label",
+        target_size=target_size,
+        color_mode="rgb",
+        class_mode="binary",
+        batch_size=batch_size,
+        shuffle=False
+    )
 
-    for class_name, label in class_map.items():
-        class_dir = os.path.join(dataset_dir, class_name)
-        if not os.path.exists(class_dir):
-            raise FileNotFoundError(f"Folder not found: {class_dir}")
-
-        for root, _, files in os.walk(class_dir):
-            for file in files:
-                ext = Path(file).suffix.lower()
-                if ext in cfg.VALID_EXTENSIONS:
-                    records.append({
-                        "filepath": os.path.join(root, file),
-                        "label": label,
-                        "class_name": class_name,
-                        "source": "non_IXI",
-                        "subject_id": None
-                    })
-
-    ixi_dir = os.path.join(dataset_dir, "IXI_no")
-    if not os.path.exists(ixi_dir):
-        raise FileNotFoundError(f"Folder not found: {ixi_dir}")
-
-    for root, _, files in os.walk(ixi_dir):
-        for file in files:
-            ext = Path(file).suffix.lower()
-            if ext in cfg.VALID_EXTENSIONS:
-                subject_id = Path(root).name
-                records.append({
-                    "filepath": os.path.join(root, file),
-                    "label": 0,
-                    "class_name": "no",
-                    "source": "IXI",
-                    "subject_id": subject_id
-                })
-
-    full_df = pd.DataFrame(records)
-    if full_df.empty:
-        raise ValueError("No images found. Check dataset path and file extensions.")
-
-    return full_df
-
-def read_image(path, target_size):
-    img = Image.open(path).convert("RGB")
-    img = img.resize(target_size)
-    arr = np.asarray(img, dtype=np.float32)
-    return arr
+    return train_gen, val_gen, test_gen
