@@ -181,7 +181,7 @@ It is **not a medical diagnostic tool**.
 
 ---
 
-## 📬 Contact
+## Contact
 
 * Hossein Mousavi,
 BSc Computer Science Engineering — BME
